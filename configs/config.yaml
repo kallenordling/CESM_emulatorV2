@@ -1,5 +1,5 @@
 # Where to put checkpoints, logs, and a copy of this config
-output_dir: outputs/example_run
+output_dir: runs/test_run
 seed: 1337
 
 # Accelerate initialization kwargs (see HuggingFace Accelerate)
@@ -11,18 +11,17 @@ accelerate:
 # Datasets
 datasets:
   train:
-    _target_: src.data.tensor_pairs:TensorPairDataset  # <-- change to your dataset
-    root: /path/to/train/data
-    split: train
-    # any other kwargs your dataset needs
-  val:
-    _target_: src.data.tensor_pairs:TensorPairDataset  # <-- change to your dataset
-    root: /path/to/val/data
-    split: val
+    _target_: data.datasets:PairedDataset
+    target_root: data/train/       # e.g. tas, pr
+    condition_root: data/train/  # e.g. ghg, aerosol, sst, etc.
+    target_variables: ["TREFHT"]
+    condition_variables: ["CO2_em_anthro"]
+    normalize: true
+
 
 # Model (your diffusion / UNet wrapper that exposes loss_components or loss)
 model:
-  _target_: src.models.diffusion:DiffusionUNet  # <-- change to your model class
+  _target_: models.diffusion:DiffusionUNet  # <-- change to your model class
   in_channels:  C_IN
   out_channels: C_OUT
   # add the rest of your model hyperparameters here
