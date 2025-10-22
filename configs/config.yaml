@@ -1,0 +1,73 @@
+# Where to put checkpoints, logs, and a copy of this config
+output_dir: outputs/example_run
+seed: 1337
+
+# Accelerate initialization kwargs (see HuggingFace Accelerate)
+accelerate:
+  mixed_precision: "bf16"   # "no", "fp16", "bf16"
+  log_with: null            # e.g., "wandb" or "tensorboard"
+  gradient_accumulation_steps: 1
+
+# Datasets
+datasets:
+  train:
+    _target_: src.data.tensor_pairs:TensorPairDataset  # <-- change to your dataset
+    root: /path/to/train/data
+    split: train
+    # any other kwargs your dataset needs
+  val:
+    _target_: src.data.tensor_pairs:TensorPairDataset  # <-- change to your dataset
+    root: /path/to/val/data
+    split: val
+
+# Model (your diffusion / UNet wrapper that exposes loss_components or loss)
+model:
+  _target_: src.models.diffusion:DiffusionUNet  # <-- change to your model class
+  in_channels:  C_IN
+  out_channels: C_OUT
+  # add the rest of your model hyperparameters here
+
+# Optional noise scheduler for sampling (if your model uses one externally)
+# Remove this block if not needed by your code.
+scheduler:
+  _target_: diffusers.schedulers.scheduling_ddpm:DDPMScheduler
+  num_train_timesteps: 1000
+  beta_schedule: "squaredcos_cap_v2"
+
+# (Optional) Define optimizer here if you want to pass a prebuilt optimizer to the trainer.
+# If omitted, the trainer will build AdamW from its internal cfg.
+# optimizer:
+#   _target_: torch.optim:AdamW
+#   lr: 0.0002
+#   betas: [0.9, 0.999]
+#   weight_decay: 0.0001
+
+# Trainer block mirrors trainers/unet_trainer.TrainerConfig
+trainer:
+  _target_: trainers.unet_trainer:UNetTrainer
+  cfg:
+    # dataloader
+    batch_size: 10
+    num_workers: 4
+    pin_memory: true
+
+    # optimization
+    max_epochs: 1000000
+    lr: 0.0002
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
+    grad_clip: 1.0
+    use_amp: true
+
+    # sampling/preview
+    preview_every: 200
+    preview_batch: 2
+
+    # checkpointing
+    ckpt_every: 5
+    keep_last: 5
+    ckpt_dir: ${output_dir}/checkpoints
+
+    # loss knobs (picked up by your loss in train_new_loss.py logic)
+    mean_anchor_beta: 0.1
+    cond_loss_scaling: 0.1
