@@ -1,0 +1,32 @@
+scheduler:
+    _target_: custom_diffusers.continuous_ddpm.ContinuousDDPM
+    beta_schedule: linear
+    prediction_type: v_prediction
+    clip_sample: false
+    clip_range:
+      - 0
+      - null
+      
+data_dir: /scratch/project_462001112/emulator_data/ 
+save_dir: ./
+
+# Seed for random number generators
+seed: 42
+variables: ["TREFHT"]
+load_path: /projappl/project_462001112/CESM_emulatorV2/runs/run_test_co2_1074.pt
+gen_mode: gen  # Either gen/val/test
+batch_size: 2
+sample_steps: 250
+start_year: 1850
+end_year: 2100
+save_name: co2_ssp126  # Only set a save name if you want something special added to your save path
+samples_per: 10
+cond_file: emissions_ssp126_v2.nc
+sul_mul: 0
+co2_mul: 1
+dataset:
+  _target_: data.climate_dataset.ClimateDataset
+  seq_len: 1
+
+accelerator:
+  mixed_precision: bf16

@@ -1,331 +1,478 @@
-# trainers/unet_trainer.py
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
+import os
+import random
+from typing import Any, Callable
 
-import math
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from accelerate import Accelerator
-from accelerate.logging import get_logger
-from diffusers import DDPMScheduler
+from diffusers import SchedulerMixin
+from omegaconf.dictconfig import DictConfig
+from torch.optim import Optimizer
+from torch.nn.functional import mse_loss
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from einops import reduce
+#import wandb
+from ema_pytorch import EMA
 
-try:
-    import torch._dynamo  # optional; can help disable graph breaks on debug
-except Exception:
-    torch = torch
+#from utils.viz_utils import create_gif
+from data.climate_dataset import ClimateDataset, ClimateDataLoader
+from models.video_net import UNetModel3D
+#from utils.gen_utils import generate_samples
+from custom_diffusers.continuous_ddpm import ContinuousDDPM
+from torch.serialization import add_safe_globals
+import ema_pytorch
 
-LOG = get_logger(__name__, log_level="INFO")
+def _get_ema_state_dict(ema_obj):
+    """
+    Works for both ema-pytorch.EMA and custom EMA wrappers.
+    Tries common attributes in this order.
+    """
+    if ema_obj is None:
+        return None
+    # ema-pytorch exposes .state_dict()
+    if hasattr(ema_obj, "state_dict"):
+        return ema_obj.state_dict()
+    # some wrappers store the averaged model as .ema_model
+    if hasattr(ema_obj, "ema_model") and hasattr(ema_obj.ema_model, "state_dict"):
+        return ema_obj.ema_model.state_dict()
+    raise AttributeError("EMA object does not expose a state_dict().")
 
 
-def _unwrap(model: nn.Module) -> nn.Module:
-    """Get the underlying model (unwrap DDP / accelerate wrappers)."""
-    base = model
-    while hasattr(base, "module"):
-        base = base.module
-    return base
+def _load_ema_state_dict(ema_obj, state):
+    """
+    Load EMA state into the existing EMA object.
+    Supports ema-pytorch.EMA (has .load_state_dict) and
+    fallback to .ema_model.load_state_dict.
+    """
+    if ema_obj is None or state is None:
+        return
+    if hasattr(ema_obj, "load_state_dict"):
+        ema_obj.load_state_dict(state)
+        return
+    if hasattr(ema_obj, "ema_model") and hasattr(ema_obj.ema_model, "load_state_dict"):
+        ema_obj.ema_model.load_state_dict(state)
+        return
+    raise AttributeError("EMA object does not support load_state_dict().")
 
+def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
+    import os, re, glob
+    paths = glob.glob(os.path.join(ckpt_dir, pattern))  # <-- module.function
+    def _key(p):
+        m = re.search(r"epoch[_-](\d+)", os.path.basename(p))
+        return (int(m.group(1)) if m else -1, os.path.getmtime(p))
+    return sorted(paths, key=_key, reverse=True)
 
-@dataclass
-class TrainerConfig:
-    # dataloader
-    batch_size: int = 8
-    num_workers: int = 4
-    pin_memory: bool = True
+def calc_mse_loss(model_output, target,lats):
+    """Manually calculate mse loss"""
+    spatial_loss = (model_output - target) ** 2
 
-    # optimization
-    max_epochs: int = 100
-    lr: float = 2e-4
-    betas: tuple[float, float] = (0.9, 0.999)
-    weight_decay: float = 1e-4
-    grad_clip: float = 1.0
-    use_amp: bool = True
+    # Weight the equator more heavily than the poles
+    latitude = torch.as_tensor(lats.values, dtype=spatial_loss.dtype, device=spatial_loss.device)
 
-    # sampling/preview
-    preview_every: int = 10
-    preview_batch: int = 2
+    latitude_rad = torch.deg2rad(latitude)
+    latitude_weight = torch.cos(latitude_rad)
 
-    # checkpointing
-    ckpt_every: int = 10
-    keep_last: int = 5
-    ckpt_dir: str = "checkpoints"
+    # Weight the loss
+    #print(spatial_loss.shape,latitude_weight.shape)
+    lat_weighted_loss = torch.einsum('...yx,y->...yx', spatial_loss, latitude_weight).mean()#(spatial_loss * latitude_weight).mean()
 
-    # loss knobs passed through to the model (if supported)
-    mean_anchor_beta: float = 0.1
-    cond_loss_scaling: float = 0.1
+    return lat_weighted_loss
 
 
 class UNetTrainer:
-    """
-    Trainer that:
-      • builds loaders
-      • computes loss the SAME WAY as your train_new_loss.py:
-          - uses model.loss_components(...) if available
-          - else falls back to model.loss(...)
-        and logs 'mse_raw', 'mse_lat', 'cond_loss', and 'total'.
-      • supports mixed precision, grad clipping, ckpt save, and simple previews.
-    """
+    """Trainer class for 2D diffusion models."""
 
     def __init__(
         self,
-        train_set,
-        val_set,
-        *,
-        model: nn.Module,
+        train_set: ClimateDataset,
+        model: UNetModel3D,
+        scheduler: SchedulerMixin,
         accelerator: Accelerator,
-        scheduler: Optional[DDPMScheduler] = None,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        cfg: Optional[Dict[str, Any]] = None,
+        hyperparameters: DictConfig,
+        dataloader: Callable[[Any], DataLoader],
+        optimizer: Callable[[Any], Optimizer],
     ) -> None:
+        # Assign the hyperparameters to class attributes
+        self.save_hyperparameters(hyperparameters)
+
+        # Assign more class attributes
         self.accelerator = accelerator
+        self.train_set, self.val_set = train_set, 0
         self.model = model
-        self.scheduler = scheduler  # (DDPM noise scheduler, if you use it during sampling)
-        self.cfg = self._cfg_from_dict(cfg)
+        self.scheduler: SchedulerMixin = scheduler
+        self.cond_loss_scaling=0.2
+        self.scheduler.set_timesteps(self.sample_steps)
 
-        # Forward loss knobs to the underlying diffusion module if it exposes them
-        m = _unwrap(self.model)
-        # These attributes mirror what you set in train_new_loss.py
-        if hasattr(m, "mean_anchor_beta"):
-            m.mean_anchor_beta = float(self.cfg.mean_anchor_beta)
-        else:
-            try:
-                setattr(m, "mean_anchor_beta", float(self.cfg.mean_anchor_beta))
-            except Exception:
-                pass
-        try:
-            m._cfg_cond_loss_scaling = float(self.cfg.cond_loss_scaling)
-        except Exception:
-            pass
+        # Keep track of our exponential moving average weights
+        self.ema_model = EMA(
+            self.model,
+            beta=0.9999,  # exponential moving average factor
+            update_after_step=100,  # only after this number of .update() calls will it start updating
+            update_every=10,
+        ).to(self.accelerator.device)
 
-        self.train_loader = DataLoader(
-            train_set,
-            batch_size=self.cfg.batch_size,
-            shuffle=True,
-            num_workers=self.cfg.num_workers,
-            pin_memory=self.cfg.pin_memory,
-            drop_last=False,
+        # Assign the device and weight dtype (32 bit for training)
+        self.device = self.accelerator.device
+        self.weight_dtype = torch.float32
+
+        self.optimizer = optimizer(
+            self.model.parameters(), lr=self.lr * self.accelerator.num_processes
         )
 
-        self.val_loader = DataLoader(
-            val_set,
-            batch_size=self.cfg.batch_size,
-            shuffle=False,
-            num_workers=self.cfg.num_workers,
-            pin_memory=self.cfg.pin_memory,
-            drop_last=False,
-        )
+        self.train_loader: ClimateDataLoader = dataloader(
+            self.train_set,
+            self.accelerator,
+            self.batch_size,    
+            #shuffle=True,
+            #drop_last=True,              # avoid short last batch on any rank
+            #pin_memory=True,
+            #persistent_workers=True,num_workers=4
+            )
+        #self.val_loader: ClimateDataLoader = dataloader(
+        #    self.val_set,
+        #    self.accelerator,
+        #    self.batch_size,
+        #)
 
-        self.optimizer = optimizer or torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.cfg.lr,
-            betas=self.cfg.betas,
-            weight_decay=self.cfg.weight_decay,
-        )
+        # Initialize counters
+        self.global_step = 0
+        self.first_epoch = 0
 
-        # prepare with accelerate
+        # Keep track of important variables for logging
+        self.total_batch_size = (
+            self.batch_size
+            * self.accelerator.num_processes
+            * self.accelerator.gradient_accumulation_steps
+        )
+        self.num_steps_per_epoch = (
+            len(self.train_loader)
+            // self.accelerator.gradient_accumulation_steps
+            // self.accelerator.num_processes
+        )
+        self.max_train_steps = self.max_epochs * self.num_steps_per_epoch
+
+        # Log to WANDB (on main process only)
+        if self.accelerator.is_main_process:
+            self.log_hparams()
+
+        # Load model states from checkpoints if they exist
+        if self.load_path:
+            self.load(self.load_path)
+
+        # Prepare everything for GPU training
+        self.prepare()
+
+    def save_hyperparameters(self, cfg: DictConfig) -> None:
+        """Saves the hyperparameters as class attributes."""
+        for key, value in cfg.items():
+            setattr(self, key, value)
+
+    def log_hparams(self):
+        """Logs the hyperparameters to WANDB."""
+        #run = self.accelerator.get_tracker("wandb").tracker
+
+        hparam_dict = {
+            "Number Training Examples": len(self.train_set)
+            * len(self.train_set.realizations),
+            "Number Epochs": self.max_epochs,
+            "Batch Size per Device": self.batch_size,
+            "Total Train Batch Size (w. distributed & accumulation)": self.total_batch_size,
+            "Gradient Accumulation Steps": self.accelerator.gradient_accumulation_steps,
+            "Total Optimization Steps": self.max_train_steps,
+        }
+
+        #run.config.update(hparam_dict)
+
+    def prepare(self):
+        """Just send all relevant objects through the accelerator to be placed on GPU."""
         (
             self.model,
             self.optimizer,
-            self.train_loader,
-            self.val_loader,
-        ) = self.accelerator.prepare(
-            self.model, self.optimizer, self.train_loader, self.val_loader
-        )
+        ) = self.accelerator.prepare(self.model, self.optimizer)
 
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.cfg.use_amp)
+    def train(self):
+        # Sanity check the validation loop and sampling before training
+        for epoch in range(self.first_epoch, self.max_epochs):
+            #print(epoch)
+            for step, (batch,cond) in enumerate(self.train_loader.generate()):
+                #print(step)
+                #print(len(batch),batch[0].shape,batch[1].shape)
+                self.model.train()
+                # Skip steps until we reach the resumed step
+                if (
+                    self.load_path
+                    and epoch == self.first_epoch
+                    and step < self.resume_step
+                ):
 
-        self._global_step = 0
-        LOG.info("UNetTrainer initialized.")
+                    continue
+                #print("COND SHAPE in train",cond.shape)
+                loss = self.get_loss(batch,cond)
 
-    # ------------------------ public API ------------------------
+                # Check if the accelerator has performed an optimization step
+                if self.accelerator.sync_gradients:
+                    # Update counts
+                    #progress_bar.update(1)
+                    self.global_step += 1
+                    self.ema_model.update()
 
-    def train(self) -> None:
-        for epoch in range(1, self.cfg.max_epochs + 1):
-            train_logs = self._run_epoch(epoch, train=True)
-            val_logs = self._run_epoch(epoch, train=False)
+                    if self.accelerator.is_main_process:
+                        # Check to see if we need to sample from our model
+                        #if self.global_step % self.sample_every == 0:
+                        #    self.sample()
 
-            # log to wandb/tensorboard via accelerator
-            to_log = {f"train/{k}": v for k, v in train_logs.items()}
-            to_log.update({f"val/{k}": v for k, v in val_logs.items()})
-            to_log["epoch"] = epoch
-            self.accelerator.log(to_log, step=self._global_step)
+                        # Check to see if we need to save our model
+                        if self.global_step % self.save_every == 0:
+                            self.save(epoch)
 
-            # checkpointing (only main process)
-            if self.accelerator.is_main_process and (epoch % self.cfg.ckpt_every == 0):
-                self._save_ckpt(epoch)
+                    # Metric calculation and logging
+                    avg_loss = self.accelerator.gather_for_metrics(loss).mean()
+                    log_dict = {"Training/Loss": avg_loss.detach().item()}
+                    self.accelerator.log(log_dict, step=self.global_step)
+                    self.accelerator.log({"Epoch": epoch}, step=self.global_step)
+                    self.accelerator.print(log_dict,{"Epoch": epoch},)
+                    #progress_bar.set_postfix(**log_dict)
 
-            # preview samples (optional)
-            if self.accelerator.is_main_process and (epoch % self.cfg.preview_every == 0):
-                self._preview(epoch)
+            #progress_bar.close()
 
-    # ---------------------- internals ---------------------------
+    def get_original_sample(self, noisy_sample, model_output, timesteps):
+        
+        alpha_prod_t = self.scheduler.alphas_cumprod[timesteps].view(-1, 1, 1, 1, 1)
+        beta_prod_t = 1 - alpha_prod_t
 
-    def _run_epoch(self, epoch: int, *, train: bool) -> Dict[str, float]:
-        self.model.train(mode=train)
+        pred_original_sample = (alpha_prod_t**0.5) * noisy_sample - (beta_prod_t**0.5) * model_output
 
-        loader = self.train_loader if train else self.val_loader
-        meter: Dict[str, float] = {"loss": 0.0, "mse_raw": 0.0, "mse_lat": 0.0, "cond_loss": 0.0}
-        steps = 0
+        return pred_original_sample
 
-        for batch in loader:
-            # Support both (cond, x0) or (cond, x0, years) tuples as in your script
-            if len(batch) == 3:
-                cond, x0, years = batch
-            else:
-                cond, x0 = batch
-                years = None
 
-            with self.accelerator.accumulate(self.model):
-                if train:
-                    self.optimizer.zero_grad(set_to_none=True)
 
-                # === LOSS (mirrors train_new_loss.py) ===
-                if self.cfg.use_amp:
-                    with torch.autocast("cuda", dtype=torch.bfloat16):
-                        loss, comps = self._compute_loss(x0, cond, years=years)
-                else:
-                    loss, comps = self._compute_loss(x0, cond, years=years)
 
-                if train:
-                    self.accelerator.backward(loss)
+    def get_loss(self, batch,cond_map):
+        clean_samples = batch.to(self.weight_dtype)
+        #cond_map = reduce(clean_samples, "b v t h w -> b v 1 h w", "mean").repeat(
+        #    1, 1, clean_samples.shape[-3], 1, 1
+        #)
 
-                    if self.cfg.grad_clip and self.cfg.grad_clip > 0:
-                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
+        # Sample noise that we'll add to the clean images
+        noise = torch.randn_like(clean_samples)
 
-                    self.optimizer.step()
-
-                # meters
-                meter["loss"] += float(loss.detach().item())
-                meter["mse_raw"] += float(comps.get("mse_raw", loss).detach().item())
-                meter["mse_lat"] += float(comps.get("mse_lat", loss).detach().item())
-                meter["cond_loss"] += float(comps.get("cond_loss", torch.zeros([], device=loss.device)).detach().item())
-                steps += 1
-                if train:
-                    self._global_step += 1
-
-        # average
-        for k in meter:
-            meter[k] = meter[k] / max(1, steps)
-
-        split = "train" if train else "val"
-        LOG.info(f"[{split}] epoch {epoch} :: "
-                 f"loss={meter['loss']:.6f} mse_raw={meter['mse_raw']:.6f} "
-                 f"mse_lat={meter['mse_lat']:.6f} cond_loss={meter['cond_loss']:.6f}")
-        return meter
-
-    @torch.no_grad()
-    def _preview(self, epoch: int) -> None:
-        """Lightweight preview: run a forward sample on a tiny batch and log images if tracker supports it."""
-        try:
-            import torchvision
-            from torchvision.utils import make_grid
-        except Exception:
-            LOG.info("torchvision not available; skipping preview.")
-            return
-
-        self.model.eval()
-        for batch in self.val_loader:
-            if len(batch) == 3:
-                cond, x0, years = batch
-            else:
-                cond, x0 = batch
-                years = None
-
-            cond = cond[: self.cfg.preview_batch]
-            x0 = x0[: self.cfg.preview_batch]
-
-            # Unwrap to access diffusion.sample(...)
-            diff = _unwrap(self.model)
-            B, _, H, W = cond.shape
-            try:
-                pred = diff.sample(cond, shape=(B, 1, H, W), device=cond.device)
-            except TypeError:
-                pred = diff.sample(cond, shape=(B, 1, H, W), device=cond.device)
-
-            # normalize to [0,1]
-            def _mm01(t):
-                t = t.detach()
-                t = (t - t.amin(dim=(2, 3), keepdim=True)) / (t.amax(dim=(2, 3), keepdim=True) - t.amin(dim=(2, 3), keepdim=True) + 1e-8)
-                return t
-
-            grid = make_grid(torch.cat([_mm01(cond), _mm01(x0), _mm01(pred)], dim=0), nrow=cond.size(0))
-            self.accelerator.log({"preview/triptych": [self.accelerator.prepare_model(self.model), grid]}, step=self._global_step)
-            break  # one preview is enough
-
-    def _compute_loss(self, x0: torch.Tensor, cond: torch.Tensor, years: Optional[torch.Tensor] = None):
-        """
-        EXACT selection policy used in your train_new_loss.py:
-          - if the underlying diffusion exposes `loss_components(x0, cond, years=...)`,
-            expect a dict with keys: 'mse_raw', 'mse_lat', 'cond_loss', 'total'.
-          - otherwise, use `loss(x0, cond)` and mirror to fields.
-        """
-        m = _unwrap(self.model)
-
-        if hasattr(m, "loss_components"):
-            # signature variants allowed: with/without years kwarg
-            try:
-                comps: Dict[str, torch.Tensor] = m.loss_components(x0, cond, years=years)
-            except TypeError:
-                comps = m.loss_components(x0, cond)
-            loss = comps["total"]
-            return loss, comps
-
-        # Fallback to simple loss()
-        if hasattr(m, "loss"):
-            loss = m.loss(x0, cond) if years is None else m.loss(x0, cond, years=years)
+        # If we are doing continuous diffusion, timesteps need to be from 0 - 1
+        if isinstance(self.scheduler, ContinuousDDPM):
+            timesteps = torch.rand(clean_samples.shape[0], device=self.device)
+            timesteps = self.scheduler.log_snr(timesteps)
         else:
-            # very old API: forward returns loss
-            out = m(x0, cond) if years is None else m(x0, cond, years=years)
-            loss = out if torch.is_tensor(out) else out["loss"]
+            timesteps = torch.randint(
+                0,
+                self.scheduler.config.num_train_timesteps,
+                (clean_samples.shape[0],),
+                device=self.device,
+            ).long()
 
-        comps = {
-            "mse_raw": loss.detach(),
-            "mse_lat": loss.detach(),
-            "cond_loss": torch.zeros((), device=loss.device),
-            "total": loss,
-        }
-        return loss, comps
+        # Add noise to the clean images according to the noise magnitude at each timestep
+        # (this is the forward diffusion process)
+        noisy_samples = self.scheduler.add_noise(clean_samples, noise, timesteps)
 
-    def _save_ckpt(self, epoch: int) -> None:
-        import os, glob, re
-        os.makedirs(self.cfg.ckpt_dir, exist_ok=True)
-        path = os.path.join(self.cfg.ckpt_dir, f"ckpt_epoch_{epoch:04d}.pt")
-        self.accelerator.save_state(path)
-        LOG.info(f"Saved checkpoint -> {path}")
+        with self.accelerator.accumulate(self.model):
+            model_output = self.model(
+                noisy_samples,
+                timesteps,
+                cond_map=cond_map,
+            )
 
-        # prune older ones
-        def _key(p):
-            m = re.search(r"epoch[_-](\d+)", os.path.basename(p))
-            return (int(m.group(1)) if m else -1, os.path.getmtime(p))
-        ckpts = sorted(glob.glob(os.path.join(self.cfg.ckpt_dir, "ckpt_epoch_*.pt")), key=_key, reverse=True)
-        for p in ckpts[self.cfg.keep_last:]:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+            # Make sure to get the right target for the loss
+            if self.scheduler.config.prediction_type == "epsilon":
+                target = noise
+            elif self.scheduler.config.prediction_type == "v_prediction":
+                target = self.scheduler.get_velocity(clean_samples, noise, timesteps)
+            else:
+                raise NotImplementedError("Only epsilon and v_prediction supported")
 
-    @staticmethod
-    def _cfg_from_dict(raw: Optional[Dict[str, Any]]) -> TrainerConfig:
-        if raw is None:
-            return TrainerConfig()
-        # allow hydra DictConfig or plain dict, coerce types safely
-        cfg = TrainerConfig(
-            batch_size=int(raw.get("batch_size", 8)),
-            num_workers=int(raw.get("num_workers", 4)),
-            pin_memory=bool(raw.get("pin_memory", True)),
-            max_epochs=int(raw.get("max_epochs", raw.get("num_epochs", 100))),
-            lr=float(raw.get("optimizer", {}).get("lr", raw.get("lr", 2e-4))),
-            betas=tuple(raw.get("optimizer", {}).get("betas", raw.get("betas", (0.9, 0.999)))),
-            weight_decay=float(raw.get("optimizer", {}).get("weight_decay", raw.get("weight_decay", 1e-4))),
-            grad_clip=float(raw.get("grad_clip", raw.get("max_grad_norm", 1.0))),
-            use_amp=bool(raw.get("use_amp", True)),
-            preview_every=int(raw.get("preview_every", 10)),
-            preview_batch=int(raw.get("preview_batch", 2)),
-            ckpt_every=int(raw.get("ckpt_every", raw.get("save_every", 10))),
-            keep_last=int(raw.get("keep_last", 5)),
-            ckpt_dir=str(raw.get("ckpt_dir", "checkpoints")),
-            mean_anchor_beta=float(raw.get("mean_anchor_beta", 0.1)),
-            cond_loss_scaling=float(raw.get("cond_loss_scaling", raw.get("mean_anchor_beta", 0.1))),
+            # Calculate loss and update gradients
+            mse_loss = calc_mse_loss(model_output, target,self.train_set.lats)
+            # Calculate the avg conditional loss
+            if  hasattr(self.scheduler, "alphas_cumprod"):
+                pred_original_sample = self.get_original_sample(noisy_samples, model_output, timesteps)
+            elif self.scheduler.config.prediction_type == "v_prediction":
+                pred_original_sample = self.scheduler.predict_start_from_v(noisy_samples, timesteps, model_output)
+            else:
+                pred_original_sample = self.scheduler.predict_start_from_noise(noisy_samples, timesteps, model_output)
+
+           
+            # Get the mean of both the clean and the predicted original sample
+            clean_mean = clean_samples.mean(dim=-3)
+            pred_mean = pred_original_sample.mean(dim=-3)
+            cond_loss = ((clean_mean - pred_mean) ** 2).mean()
+
+            # Calculate the loss
+            loss = mse_loss + cond_loss * self.cond_loss_scaling
+
+
+            # Scale the loss by cosine-weighted latitude
+            self.accelerator.backward(loss)
+
+            if self.accelerator.sync_gradients:
+                self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        return loss
+
+    @torch.inference_mode()
+    def validation_loop(self, sanity_check=False) -> None:
+        """Runs a single epoch of validation.
+
+        Updates the loss, logs it, and backpropagates the error.
+        """
+        self.model.eval()
+        val_loss = 0
+
+        for batch_idx, batch in enumerate(self.val_loader.generate()):
+            # If we are sanity checking, only run 10 batches
+            if sanity_check and batch_idx > 10:
+                return
+
+            val_loss += self.model_forward_pass(batch)[0].item()
+
+        # Log the average
+        self.accelerator.log(
+            {"Validation/Loss": val_loss / len(self.val_loader)}, step=self.global_step
         )
-        return cfg
+
+    @torch.inference_mode()
+    def sample(self) -> None:
+        """Samples a batch of images from the model."""
+
+        self.ema_model.eval()
+        # Grab a random sample from validation set
+        batch = random.choice(self.val_set).unsqueeze(0).to(self.accelerator.device)
+
+        clean_samples = batch.to(self.weight_dtype)
+
+        # Generate the samples
+        gen_sample = generate_samples(
+            clean_samples, self.scheduler, self.sample_steps, self.ema_model
+        )
+
+        # Turn the samples into xr datasets
+        gen_ds = self.val_set.convert_tensor_to_xarray(gen_sample[0])
+        val_ds = self.val_set.convert_tensor_to_xarray(clean_samples[0])
+
+        # Create a gif of the samples
+        gen_frames = create_gif(gen_ds)
+        val_frames = create_gif(val_ds)
+
+        # Log the gif to wandb
+        for var, gif in gen_frames.items():
+            self.accelerator.log(
+                {f"Generated {var}": wandb.Video(gif, fps=4)}, step=self.global_step
+            )
+
+        for var, gif in val_frames.items():
+            self.accelerator.log(
+                {f"Original {var}": wandb.Video(gif, fps=4)}, step=self.global_step
+            )
+
+    def save(self, epoch: int):
+        """Saves the state of training to disk."""
+        if self.save_name is None:
+            return
+        else:
+            state_dict = {
+                "EMA": self.ema_model.ema_model.state_dict(),
+                "Unet": self.accelerator.unwrap_model(self.model).state_dict(),
+                "Optimizer": self.optimizer.state_dict(),
+                "Global Step": self.global_step,
+            }
+
+            # If the directory doesn't exist already create it
+            os.makedirs(self.save_dir, exist_ok=True)
+
+            # Create the save filename and add the epoch number
+            save_name = self.save_name.split(".pt")[0] + f"_{epoch}.pt"
+
+            # Save the State dictionary to disk
+            torch.save(state_dict, os.path.join(self.save_dir, save_name), _use_new_zipfile_serialization=False)
+            
+            base = self.save_name.split(".pt")[0]
+            save_name = f"{base}_{epoch}.pt"
+            save_path = os.path.join(self.save_dir, save_name)
+            
+            all_ckpts = [
+                os.path.join(self.save_dir, f)
+                for f in os.listdir(self.save_dir)
+                if f.startswith(base + "_") and f.endswith(".pt")
+                ]
+
+            # Sort by epoch number extracted from filename
+            def extract_epoch(fname):
+                try:
+                    return int(fname.split("_")[-1].split(".")[0])
+                except ValueError:
+                    return -1  # fallback, should not happen
+
+            all_ckpts_sorted = sorted(all_ckpts, key=extract_epoch, reverse=True)
+
+            # Keep last 5, delete the rest
+            keep_last = 5
+            for ckpt in all_ckpts_sorted[keep_last:]:
+                try:
+                    os.remove(ckpt)
+                except OSError:
+                    pass
+            
+            
+            
+    def load(self, path):
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+
+        # Restore model
+        self.accelerator.unwrap_model(self.model).load_state_dict(checkpoint["Unet"], strict=True)
+
+        # Restore EMA (optional)
+        if "EMA" in checkpoint and checkpoint["EMA"] is not None and hasattr(self, "ema_model"):
+            try:
+                #self.ema_model.load_state_dict(checkpoint["EMA"], strict=False)
+                #self.ema_model = checkpoint["EMA"].to(self.device)
+                
+                ema_model_sd = checkpoint["EMA"]  # full EMA state dict (online_model + ema_model)
+
+                # Extract only EMA weights and strip "ema_model." prefix
+                #ema_model_sd = {
+                #     k.replace("ema_model.", ""): v
+                #     for k, v in ema_wrapped_sd.items()
+                #     if k.startswith("ema_model.")
+                # }
+
+                ema_model = EMA(
+                        self.model,
+                        beta=0.9999,  # exponential moving average factor
+                        update_after_step=100,  # only after this number of .update() calls will it start updating
+                        update_every=10,
+                        ).to(self.device)
+                ema_model.ema_model.load_state_dict(ema_model_sd)
+                ema_model.eval()
+                
+            except Exception as e:
+                print(f"[WARN] Could not load EMA: {e}")
+
+        # Restore optimizer (optional)
+        if "Optimizer" in checkpoint:
+            try:
+                self.optimizer.load_state_dict(checkpoint["Optimizer"])
+            except Exception as e:
+                print(f"[WARN] Could not load optimizer state: {e}")
+
+        # Restore global step
+        self.global_step = checkpoint.get("Global Step", 0)
+        print(self.global_step,self.accelerator.gradient_accumulation_steps)
+        self.resume_global_step = (
+            self.global_step * self.accelerator.gradient_accumulation_steps
+        )
+
+        self.resume_step = self.resume_global_step % (
+            self.num_steps_per_epoch * self.accelerator.gradient_accumulation_steps
+        )
+
+        self.first_epoch = self.global_step // self.num_steps_per_epoch
+
+        print(f"[INFO] Loaded checkpoint from {path} (step {self.global_step})")        
+            

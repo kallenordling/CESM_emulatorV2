@@ -11,7 +11,7 @@ from trainer.unetTrainer import UNetTrainer
 from models.video_net import UNetModel3D
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="config.yaml")
+@hydra.main(version_base=None, config_path="configs", config_name="config_aero.yaml")
 def main(cfg: DictConfig) -> None:
     # Create accelerator object and set RNG seed
     accelerator = Accelerator(**cfg.accelerator)

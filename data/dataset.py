@@ -12,10 +12,11 @@ class PairedDataset(Dataset):
     """
     Conditional dataset for arrays shaped like:
         (year, member_id, lat, lon)
+
     Returns one sample per (year, member) pair:
         cond: (C_cond, H, W)
         x0:   (C_tgt,  H, W)
-        years: tensor([year_value, member_index])  # configurable
+        years: tensor([year_value, member_index])
 
     Supports:
       • same-folder (data_root) OR separate roots (target_root, condition_root)
@@ -41,10 +42,10 @@ class PairedDataset(Dataset):
         lon_dim: str = "lon",
 
         # options
-        normalize_targets: bool = True,
-        return_member_in_years: bool = True,   # years -> [year_value, member_idx]
-        chunks: Optional[dict] = None,         # e.g., {"year": 1, "member_id": 1, "lat": 192, "lon": 288}
-        engine: Optional[str] = None,          # "netcdf4" or "h5netcdf"
+        normalize: bool = True,               # renamed and now affects both target + cond
+        return_member_in_years: bool = True,  # years -> [year_value, member_idx]
+        chunks: Optional[dict] = None,        # e.g. {"year":1, "member_id":1, "lat":192, "lon":288}
+        engine: Optional[str] = None,         # "netcdf4" or "h5netcdf"
         split: str = "train",
     ):
         super().__init__()
@@ -68,7 +69,7 @@ class PairedDataset(Dataset):
         self.lat_dim = lat_dim
         self.lon_dim = lon_dim
 
-        self.normalize_targets = normalize_targets
+        self.normalize = normalize
         self.return_member_in_years = return_member_in_years
         self.split = split
 
@@ -123,10 +124,11 @@ class PairedDataset(Dataset):
             (iy, im) for iy in range(self.year_vals.shape[0]) for im in range(self.member_vals.shape[0])
         ]
 
-        # Precompute normalization stats for targets (per-variable global mean/std)
-        self._norm = None
-        if self.normalize_targets:
-            self._norm = self._compute_target_norm()
+        # Precompute normalization stats for targets and conditions
+        self._norm_t, self._norm_c = None, None
+        if self.normalize:
+            self._norm_t = self._compute_norm(self.ds_t, self.target_variables)
+            self._norm_c = self._compute_norm(self.ds_c, self.condition_variables)
 
         # Spatial sizes (for info)
         self.H = int(self.ds_t.dims[self.lat_dim])
@@ -139,11 +141,11 @@ class PairedDataset(Dataset):
             f"targets={self.target_variables} cond={self.condition_variables}"
         )
 
-    def _compute_target_norm(self):
-        # Compute mean/std over (year, member, lat, lon) per target var (lazy-friendly)
+    def _compute_norm(self, ds, variables):
+        """Compute global mean/std for listed variables."""
         means, stds = [], []
-        for v in self.target_variables:
-            arr = self.ds_t[v]
+        for v in variables:
+            arr = ds[v]
             m = float(arr.mean().compute().item())
             s = float(arr.std().compute().item())
             if s == 0.0:
@@ -171,11 +173,16 @@ class PairedDataset(Dataset):
         x0 = np.stack(x0_list, axis=0)    # (C_tgt, H, W)
         cond = np.stack(cond_list, axis=0)  # (C_cond, H, W)
 
-        # Normalize targets per-variable (broadcast over H,W)
-        if self._norm is not None:
-            mean = self._norm["mean"][:, None, None]
-            std = self._norm["std"][:, None, None]
-            x0 = (x0 - mean) / std
+        # Normalize targets and conditions
+        if self._norm_t is not None:
+            mean_t = self._norm_t["mean"][:, None, None]
+            std_t = self._norm_t["std"][:, None, None]
+            x0 = (x0 - mean_t) / std_t
+
+        if self._norm_c is not None:
+            mean_c = self._norm_c["mean"][:, None, None]
+            std_c = self._norm_c["std"][:, None, None]
+            cond = (cond - mean_c) / std_c
 
         x0 = torch.from_numpy(x0)
         cond = torch.from_numpy(cond)

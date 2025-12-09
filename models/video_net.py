@@ -9,7 +9,7 @@ from einops import rearrange
 
 from torch.utils import checkpoint as torch_checkpoint
 
-from rotary_embedding import RotaryEmbedding
+from  models.rotary_embedding import RotaryEmbedding
 
 
 def checkpoint(fn, *args, enabled=False):
@@ -561,8 +561,8 @@ class UNetModel3D(nn.Module):
 
     def __init__(
         self,
-        n_vars,
-        model_dim,
+        #n_vars,
+        model_dim,in_channels,out_channels,
         dim_mults=(1, 2, 4, 8),
         attn_heads=8,
         attn_dim_head=32,
@@ -572,8 +572,8 @@ class UNetModel3D(nn.Module):
         resnet_groups=8,
         use_checkpoint=False,
         use_temp_attn=True,
-        day_cond=True,
-        year_cond=True,
+        day_cond=False,
+        year_cond=False,
         cond_map=True,
     ):
         super().__init__()
@@ -583,12 +583,12 @@ class UNetModel3D(nn.Module):
         self.day_cond = day_cond
 
         # Input and output size to the model will be how many variables we are predicting
-        in_channels = n_vars
-        out_channels = n_vars
+        #in_channels = n_vars
+        #out_channels = n_vars
 
         # Add an input channel for the conditioning map
-        if cond_map:
-            in_channels += n_vars
+        #if cond_map:
+        #    in_channels += n_vars
 
         # Initial convolution and attention to process input
         init_padding = init_kernel_size // 2
@@ -645,6 +645,7 @@ class UNetModel3D(nn.Module):
         # Construct a list of tuples describing the in and out channels of each layer in model
         dims = [model_dim, *map(lambda m: int(model_dim * m), dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
+
 
         # Define time embedding dimension and create MLP to process timesteps
         time_dim = model_dim * 4
@@ -806,6 +807,9 @@ class UNetModel3D(nn.Module):
 
         # If a conditioning map is passed in, concat it to noisy input
         if exists(cond_map):
+            #print(cond_map.shape)
+            #print(x.shape)
+            #print('SHAPES')
             x = torch.cat([x, cond_map], dim=1)
 
         if exists(lowres_cond):
