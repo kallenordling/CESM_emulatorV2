@@ -276,11 +276,10 @@ class UNetTrainer:
         t = torch.zeros(y.shape[0], device=y.device, dtype=torch.long)
 
         with self.accelerator.accumulate(self.model):
-            y_hat = self.model(x, t,
-                               cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
+            y_hat = self.model(x, t, cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
 
-            loss = calc_mse_loss(y_hat, y, self.train_set.lats):contentReference[oaicite:11]
-            {index = 11}
+            loss = calc_mse_loss(y_hat, y, self.train_set.lats)
+
 
             self.accelerator.backward(loss)
             if self.accelerator.sync_gradients:
