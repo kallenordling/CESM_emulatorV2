@@ -14,7 +14,7 @@ data:
   train:
     seq_len: 1
     _target_: data.climate_dataset.ClimateDataset
-    data_dir: /scratch/project_462001112/emulator_data/       # e.g. tas, pr
+    data_dir: /fmi/scratch/project_2001927/nordlin1/emulator_data/       # e.g. tas, pr
     realizations: ['r10i1181p1f1','r10i1231p1f1','r10i1251p1f1','r10i1281p1f1','r10i1301p1f1','r1i1001p1f1','r1i1231p1f1','r1i1251p1f1']
     cond_file: emissions.nc  # e.g. ghg, aerosol, sst, etc.
     target_vars: ["TREFHT"]
