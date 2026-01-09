@@ -94,15 +94,16 @@ class UNetTrainer:
     ) -> None:
         # Assign the hyperparameters to class attributes
         self.save_hyperparameters(hyperparameters)
-
+        self.training_mode = self.hyperparameters.get("training_mode", "diffusion")
+        self.noise_channels = self.hyperparameters.get("noise_channels", 0)
         # Assign more class attributes
         self.accelerator = accelerator
         self.train_set, self.val_set = train_set, 0
         self.model = model
         self.scheduler: SchedulerMixin = scheduler
         self.cond_loss_scaling=0.2
-        self.scheduler.set_timesteps(self.sample_steps)
-
+        if self.training_mode == "diffusion":
+            self.scheduler.set_timesteps(self.sample_steps)
         # Keep track of our exponential moving average weights
         self.ema_model = EMA(
             self.model,
@@ -244,10 +245,52 @@ class UNetTrainer:
 
         return pred_original_sample
 
+    def get_loss(self, batch, cond_map):
+        if self.training_mode == "fcn3":
+            return self.get_loss_fcn3(batch, cond_map)
+        else:
+            return self.get_loss_diffusion(batch, cond_map)
 
+    def get_loss_fcn3(self, batch, cond_map):
+        # target: [B,1,1,H,W]
+        y = batch.to(self.weight_dtype)
+        if y.ndim == 4:
+            y = y.unsqueeze(2)  # [B,1,H,W] -> [B,1,1,H,W]
 
+        # cond: [B,2,H,W] -> [B,2,1,H,W]
+        c = cond_map.to(self.weight_dtype)
 
-    def get_loss(self, batch,cond_map):
+        # quick-start normalization for emissions (replace later w/ fixed stats)
+        c = torch.log1p(torch.clamp(c, min=0.0))
+        mean = c.mean(dim=(0, 2, 3), keepdim=True)
+        std = c.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
+        c = (c - mean) / std
+        c = c.unsqueeze(2)
+
+        # latent noise: [B,K,1,H,W]
+        K = int(getattr(self, "noise_channels", 4))
+        x = torch.randn(y.shape[0], K, 1, y.shape[-2], y.shape[-1],
+                        device=y.device, dtype=y.dtype)
+
+        # dummy timesteps (required by model signature)
+        t = torch.zeros(y.shape[0], device=y.device, dtype=torch.long)
+
+        with self.accelerator.accumulate(self.model):
+            y_hat = self.model(x, t,
+                               cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
+
+            loss = calc_mse_loss(y_hat, y, self.train_set.lats):contentReference[oaicite:11]
+            {index = 11}
+
+            self.accelerator.backward(loss)
+            if self.accelerator.sync_gradients:
+                self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+
+        return loss
+
+    def get_loss_diffusion(self, batch,cond_map):
         clean_samples = batch.to(self.weight_dtype)
         #cond_map = reduce(clean_samples, "b v t h w -> b v 1 h w", "mean").repeat(
         #    1, 1, clean_samples.shape[-3], 1, 1

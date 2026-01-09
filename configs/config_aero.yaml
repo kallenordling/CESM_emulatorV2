@@ -62,6 +62,8 @@ trainer:
 
 
   hyperparameters:
+    training_mode: "fcn3"   # options: "diffusion" | "fcn3"
+    noise_channels: 4        # only used if training_mode == "fcn3"
     max_epochs: 10000
     sample_every: 500
     save_every: 10
