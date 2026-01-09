@@ -49,7 +49,7 @@ def preprocess(ds: xr.DataArray) -> xr.DataArray:
     return PREPROCESS_FN[ds.name](ds)
 
 
-EMISSIONS_PATH = "/scratch/project_462001112/emulator_data/emissions.nc"
+EMISSIONS_PATH = "/fmi/scratch/project_2001927/nordlin1/emulator_data/emissions.nc"
 
 @lru_cache(maxsize=1)
 def _get_emissions_minmax():
