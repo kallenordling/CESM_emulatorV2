@@ -265,7 +265,7 @@ class UNetTrainer:
         mean = c.mean(dim=(0, 2, 3), keepdim=True)
         std = c.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
         c = (c - mean) / std
-        c = c.unsqueeze(2)
+        #c = c.unsqueeze(2)
 
         # latent noise: [B,K,1,H,W]
         K = int(getattr(self, "noise_channels", 4))
