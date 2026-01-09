@@ -274,7 +274,8 @@ class UNetTrainer:
 
         # dummy timesteps (required by model signature)
         t = torch.zeros(y.shape[0], device=y.device, dtype=torch.long)
-
+        if self.accelerator.is_main_process:
+            print("x:", tuple(x.shape), "c:", tuple(c.shape))
         with self.accelerator.accumulate(self.model):
             y_hat = self.model(x, t, cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
 
