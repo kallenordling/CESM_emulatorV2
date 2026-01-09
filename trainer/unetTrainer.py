@@ -94,8 +94,8 @@ class UNetTrainer:
     ) -> None:
         # Assign the hyperparameters to class attributes
         self.save_hyperparameters(hyperparameters)
-        self.training_mode = self.hyperparameters.get("training_mode", "diffusion")
-        self.noise_channels = self.hyperparameters.get("noise_channels", 0)
+        self.training_mode = hyperparameters.get("training_mode", "diffusion")
+        self.noise_channels = hyperparameters.get("noise_channels", 0)
         # Assign more class attributes
         self.accelerator = accelerator
         self.train_set, self.val_set = train_set, 0
