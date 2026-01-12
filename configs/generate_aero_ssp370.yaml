@@ -25,7 +25,7 @@ cond_file: emissions.nc #emissions.nc
 sul_mul: 0
 co2_mul: 1
 training_mode: "fcn3"   # or "diffusion"
-noise_channels: 4       # only used for fcn3
+noise_channels: 1       # only used for fcn3
 dataset:
   _target_: data.climate_dataset.ClimateDataset
   seq_len: 1
