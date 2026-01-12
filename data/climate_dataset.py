@@ -183,7 +183,7 @@ class ClimateDataset(Dataset):
         self, tensor: torch.Tensor, coords: xr.DataArray = None
     ) -> xr.Dataset:
         """Generate an xarray dataset from a tensor of data"""
-
+        print(tensor.shape)
         assert len(tensor.shape) == 4, "Tensor must have shape (var, time, lat, lon)"
 
         np_data = tensor.cpu().numpy()
