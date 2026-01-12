@@ -115,8 +115,8 @@ class ClimateDataset(Dataset):
         self.data_dir = data_dir
 
         # Necessary to convert vars into a Python list
-        self.vars = OmegaConf.to_object(target_vars) if not isinstance(target_vars, list) else vars
-        self.cond_vars= OmegaConf.to_object(cond_vars) if not isinstance(cond_vars, list) else vars
+        self.vars = OmegaConf.to_object(target_vars) if not isinstance(target_vars, list) else target_vars
+        self.cond_vars= OmegaConf.to_object(cond_vars) if not isinstance(cond_vars, list) else cond_vars
         # Store one dataset (out of memory) as an xarray dataset for metadata
         # Store a different dataset as a torch tensor for speed
         self.xr_data: xr.Dataset
