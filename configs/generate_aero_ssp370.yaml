@@ -7,7 +7,7 @@ scheduler:
       - 0
       - null
       
-data_dir: /scratch/project_462001112/emulator_data/ 
+data_dir: /fmi/scratch/project_2001927/nordlin1/emulator_data/
 save_dir: ./
 
 # Seed for random number generators
