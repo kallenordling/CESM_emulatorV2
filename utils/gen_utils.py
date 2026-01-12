@@ -83,6 +83,7 @@ def generate_samples_fcn3(
       if ensemble_size==1: [B, 1, 1, H, W]
       else:               [E, B, 1, 1, H, W]
     """
+    print('call fcn3')
     device = next(model.parameters()).device
     dtype  = next(model.parameters()).dtype
 
