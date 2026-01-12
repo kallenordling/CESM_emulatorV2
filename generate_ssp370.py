@@ -18,7 +18,7 @@ import pandas as pd
 from custom_diffusers.continuous_ddpm import ContinuousDDPM
 # Local imports
 from data.climate_dataset import ClimateDataset
-from utils.gen_utils import generate_samples,generate_samples2
+from utils.gen_utils import generate_samples2, generate_samples_fcn3
 from omegaconf import OmegaConf
 from models.video_net import UNetModel3D
 from ema_pytorch import EMA
@@ -100,7 +100,8 @@ def main(config: DictConfig) -> None:
     # Verify that the save folder exists
     assert os.path.isdir(config.save_dir), "Save directory does not exist"
     assert config.gen_mode in ["gen", "val", "test"], "Invalid gen mode"
-
+    mode = getattr(config, "training_mode", "diffusion")
+    noise_channels = int(getattr(config, "noise_channels", 1))
     # If we're generating, make sure we have a load path
     if config.gen_mode == "gen":
         assert config.load_path, "Must specify a load path"
@@ -121,8 +122,10 @@ def main(config: DictConfig) -> None:
         target_vars=config.variables,cond_vars=["CO2_em_anthro",'sul'],cond_file=config.cond_file
 
     )
-    scheduler: ContinuousDDPM = instantiate(config.scheduler)
-    scheduler.set_timesteps(config.sample_steps)
+    scheduler = None
+    if mode == "diffusion":
+        scheduler: ContinuousDDPM = instantiate(config.scheduler)
+        scheduler.set_timesteps(config.sample_steps)
 
     conf = OmegaConf.load('./configs/config_aero.yaml')
     model_conf: UNetModel3D = instantiate(conf.model)
@@ -182,13 +185,22 @@ def main(config: DictConfig) -> None:
             #print(coords)
             tensor_batch = tensor_batch.to(accelerator.device)
             if model is not None:
-                gen_months = generate_samples2(
-                    tensor_batch,tensor_batch,
-                    scheduler=scheduler,
-                    sample_steps=config.sample_steps,
-                    model=model,
-                    disable=True,
-                )
+                if mode == "diffusion":
+
+                    gen_months = generate_samples2(
+                        tensor_batch,tensor_batch,
+                        scheduler=scheduler,
+                        sample_steps=config.sample_steps,
+                        model=model,
+                        disable=True,
+                    )
+                else:
+                    gen_months = generate_samples_fcn3(
+                        tensor_batch,
+                        model=model,
+                        noise_channels=noise_channels,
+                        ensemble_size=1,  # you loop over samples_per outside
+                    )
             else:
                 gen_months = tensor_batch
 

@@ -70,6 +70,46 @@ def generate_samples2(
 
     return gen_sample
 
+@torch.inference_mode()
+def generate_samples_fcn3(
+    cond_map: Tensor,              # [B, Ccond, H, W] or [B, Ccond, 1, H, W]
+    model: torch.nn.Module,
+    noise_channels: int,
+    ensemble_size: int = 1,
+):
+    """
+    FCN3-style sampling: one forward pass per ensemble member.
+    Returns:
+      if ensemble_size==1: [B, 1, 1, H, W]
+      else:               [E, B, 1, 1, H, W]
+    """
+    device = next(model.parameters()).device
+    dtype  = next(model.parameters()).dtype
+
+    c = cond_map.to(device=device, dtype=dtype, non_blocking=True)
+
+    # ensure cond is 5D: [B, Ccond, 1, H, W]
+    if c.ndim == 4:
+        c = c.unsqueeze(2)
+    elif c.ndim == 6 and c.shape[3] == 1:
+        c = c.squeeze(3)
+    assert c.ndim == 5, f"cond_map must be 5D after fix, got {c.shape}"
+
+    B, Cc, F, H, W = c.shape
+    assert F == 1, f"Expected F=1 for annual FCN3, got F={F}"
+
+    # dummy timestep required by your model signature
+    t = torch.zeros(B, device=device, dtype=torch.long)
+
+    def one():
+        x = torch.randn(B, noise_channels, 1, H, W, device=device, dtype=dtype)
+        return model(x, t, cond_map=c)  # -> [B, V, 1, H, W] (V=1 for now)
+
+    if ensemble_size == 1:
+        return one()
+    else:
+        outs = [one() for _ in range(ensemble_size)]
+        return torch.stack(outs, dim=0)
 
 @torch.inference_mode()
 def generate_samples(
