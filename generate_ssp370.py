@@ -195,6 +195,7 @@ def main(config: DictConfig) -> None:
                         disable=True,
                     )
                 else:
+                    print(tensor_batch.shape)
                     gen_months = generate_samples_fcn3(
                         tensor_batch,
                         model=model,
