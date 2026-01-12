@@ -66,7 +66,7 @@ trainer:
     noise_channels: 1        # only used if training_mode == "fcn3"
     max_epochs: 10000
     sample_every: 500
-    save_every: 10
+    save_every: 50
     batch_size: 8
     save_dir: runs/
     save_name: run_test_aero2.pt
