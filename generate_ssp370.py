@@ -199,7 +199,7 @@ def main(config: DictConfig) -> None:
                         tensor_batch,
                         model=model,
                         noise_channels=noise_channels,
-                        ensemble_size=1,  # you loop over samples_per outside
+                        ensemble_size=10,  # you loop over samples_per outside
                     )
             else:
                 gen_months = tensor_batch

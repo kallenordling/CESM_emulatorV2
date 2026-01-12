@@ -261,10 +261,10 @@ class UNetTrainer:
         c = cond_map.to(self.weight_dtype)
 
         # quick-start normalization for emissions (replace later w/ fixed stats)
-        c = torch.log1p(torch.clamp(c, min=0.0))
-        mean = c.mean(dim=(0, 2, 3), keepdim=True)
-        std = c.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
-        c = (c - mean) / std
+        #c = torch.log1p(torch.clamp(c, min=0.0))
+        #mean = c.mean(dim=(0, 2, 3), keepdim=True)
+        #std = c.std(dim=(0, 2, 3), keepdim=True).clamp(min=1e-6)
+        #c = (c - mean) / std
         #c = c.unsqueeze(2)
 
         # latent noise: [B,K,1,H,W]
