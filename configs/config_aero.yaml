@@ -27,7 +27,7 @@ model:
     _target_: models.video_net.UNetModel3D
     in_channels: 3
     out_channels: 1
-    dim_mults: [1, 2, 3,4, 8]
+    dim_mults: [0.75, 2, 3,4, 8]
 #   time_dim: 264
     resnet_groups: 8
 #   dropout: 0.0
@@ -63,15 +63,15 @@ trainer:
 
   hyperparameters:
     training_mode: "fcn3"   # options: "diffusion" | "fcn3"
-    noise_channels: 1        # only used if training_mode == "fcn3"
+    noise_channels: 2        # only used if training_mode == "fcn3"
     max_epochs: 10000
     sample_every: 500
     save_every: 50
     batch_size: 8
     save_dir: runs/
-    save_name: run_test_aero2.pt
+    save_name: run_test_aero3.pt
     load_path: 0 #/projappl/project_462001112/CESM_emulatorV2/runs/run_test_aero2_113.pt #/projappl/project_462001112/CESM_emulatorV2/runs/run_test_aero2_89.pt # The path to checkpoint to load from
-    lr: 0.00001 #0.0001
+    lr: 0.0001 #0.0001
     sample_steps: 250
 
   dataloader:
