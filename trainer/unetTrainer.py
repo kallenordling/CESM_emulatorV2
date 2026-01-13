@@ -62,21 +62,39 @@ def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
         return (int(m.group(1)) if m else -1, os.path.getmtime(p))
     return sorted(paths, key=_key, reverse=True)
 
-def calc_mse_loss(model_output, target,lats):
-    """Manually calculate mse loss"""
+def calc_mse_loss(model_output, target, lats):
+    """Latitude-weighted MSE loss using only latitudes between -80 and 80 degrees"""
+
     spatial_loss = (model_output - target) ** 2
 
-    # Weight the equator more heavily than the poles
-    latitude = torch.as_tensor(lats.values, dtype=spatial_loss.dtype, device=spatial_loss.device)
+    # Latitude tensor
+    latitude = torch.as_tensor(
+        lats.values,
+        dtype=spatial_loss.dtype,
+        device=spatial_loss.device,
+    )
 
+    # Mask latitudes between -80 and 80
+    lat_mask = (latitude >= -80.0) & (latitude <= 80.0)
+
+    # Latitude weights (cosine weighting)
     latitude_rad = torch.deg2rad(latitude)
     latitude_weight = torch.cos(latitude_rad)
 
-    # Weight the loss
-    #print(spatial_loss.shape,latitude_weight.shape)
-    lat_weighted_loss = torch.einsum('...yx,y->...yx', spatial_loss, latitude_weight).mean()#(spatial_loss * latitude_weight).mean()
+    # Apply mask
+    latitude_weight = latitude_weight * lat_mask
 
-    return lat_weighted_loss
+    # Weighted loss
+    weighted_loss = torch.einsum(
+        "...yx,y->...yx",
+        spatial_loss,
+        latitude_weight,
+    )
+
+    # Normalize properly (avoid bias from masked-out lats)
+    loss = weighted_loss.sum() / latitude_weight.sum()
+
+    return loss
 
 
 class UNetTrainer:
