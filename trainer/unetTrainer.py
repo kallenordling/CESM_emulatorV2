@@ -92,9 +92,9 @@ def calc_mse_loss(model_output, target, lats):
     )
 
     # Normalize properly (avoid bias from masked-out lats)
-    loss = weighted_loss.sum() / latitude_weight.sum()
+    #loss = weighted_loss.sum() / latitude_weight.sum()
 
-    return loss
+    return weighted_loss
 
 
 class UNetTrainer:
