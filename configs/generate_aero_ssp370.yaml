@@ -13,14 +13,14 @@ save_dir: ./
 # Seed for random number generators
 seed: 42
 variables: ["TREFHT"]
-load_path: /fmi/projappl/project_2001927/nordlin1/papers/CESM_emulatorV2/runs/run_test_aero2_243.pt
+load_path: /fmi/projappl/project_2001927/nordlin1/papers/CESM_emulatorV2/runs/run_test_aero2_253.pt
 gen_mode: gen  # Either gen/val/test
 batch_size: 4
 sample_steps: 250
 start_year: 1850
 end_year: 2100
 save_name: ssp370_aero_v2 # Only set a save name if you want something special added to your save path
-samples_per: 100
+samples_per: 10
 cond_file: emissions.nc #emissions.nc
 sul_mul: 0
 co2_mul: 1
