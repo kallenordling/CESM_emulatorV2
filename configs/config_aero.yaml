@@ -71,7 +71,7 @@ trainer:
     save_dir: runs/
     save_name: run_test_aero3.pt
     load_path: 0 #/projappl/project_462001112/CESM_emulatorV2/runs/run_test_aero2_113.pt #/projappl/project_462001112/CESM_emulatorV2/runs/run_test_aero2_89.pt # The path to checkpoint to load from
-    lr: 0.0001 #0.0001
+    lr: 0.00001 #0.0001
     sample_steps: 250
 
   dataloader:
