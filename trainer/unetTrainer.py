@@ -289,7 +289,10 @@ class UNetTrainer:
         K = int(getattr(self, "noise_channels", 4))
         x = torch.randn(y.shape[0], K, 1, y.shape[-2], y.shape[-1],
                         device=y.device, dtype=y.dtype)
+        noise_scale = float(getattr(self, "noise_scale", 0.25)) / (K ** 0.5)
 
+        x = noise_scale * torch.randn(y.shape[0], K, 1, y.shape[-2], y.shape[-1],
+                                      device=y.device, dtype=y.dtype)
         # dummy timesteps (required by model signature)
         t = torch.zeros(y.shape[0], device=y.device, dtype=torch.long)
 
