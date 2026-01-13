@@ -89,7 +89,7 @@ def calc_mse_loss(model_output, target, lats):
         "...yx,y->...yx",
         spatial_loss,
         latitude_weight,
-    )
+    ).mean()
 
     # Normalize properly (avoid bias from masked-out lats)
     #loss = weighted_loss.sum() / latitude_weight.sum()
