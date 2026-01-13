@@ -13,7 +13,7 @@ save_dir: ./
 # Seed for random number generators
 seed: 42
 variables: ["TREFHT"]
-load_path: /fmi/projappl/project_2001927/nordlin1/papers/CESM_emulatorV2/runs/run_test_aero2_36.pt
+load_path: /fmi/projappl/project_2001927/nordlin1/papers/CESM_emulatorV2/runs/run_test_aero2_231.pt
 gen_mode: gen  # Either gen/val/test
 batch_size: 4
 sample_steps: 250
