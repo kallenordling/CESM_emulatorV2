@@ -1,7 +1,7 @@
 import os
 import random
 from typing import Any, Callable
-
+import numpy as np
 import torch
 from accelerate import Accelerator
 from diffusers import SchedulerMixin
