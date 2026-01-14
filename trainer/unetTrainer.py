@@ -62,6 +62,23 @@ def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
         return (int(m.group(1)) if m else -1, os.path.getmtime(p))
     return sorted(paths, key=_key, reverse=True)
 
+def lat_weighted_mse(model_output, target, lats, lat_min=-80.0, lat_max=80.0, eps=1e-6):
+    # force fp32 for stability
+    diff2 = (model_output.float() - target.float()).pow(2)  # [..., Y, X]
+
+    lat = torch.as_tensor(lats, device=diff2.device, dtype=torch.float32)  # [Y]
+    mask = (lat >= lat_min) & (lat <= lat_max)
+
+    w = torch.cos(torch.deg2rad(lat))
+    w = w * mask.to(w.dtype)  # [Y]
+
+    # reshape to broadcast over lon and leading dims
+    w = w.view(*([1] * (diff2.ndim - 2)), -1, 1)  # [..., Y, 1]
+
+    weighted = diff2 * w
+    denom = (w.sum() * diff2.shape[-1]).clamp(min=eps)  # sum over lat weights * lon count
+    return weighted.sum() / denom
+
 def calc_mse_loss(model_output, target, lats):
     """Latitude-weighted MSE loss using only latitudes between -80 and 80 degrees"""
 
@@ -134,9 +151,7 @@ class UNetTrainer:
         self.device = self.accelerator.device
         self.weight_dtype = torch.float32
 
-        self.optimizer = optimizer(
-            self.model.parameters(), lr=self.lr * self.accelerator.num_processes
-        )
+        self.optimizer = optimizer(self.model.parameters(), lr=self.lr)
 
         self.train_loader: ClimateDataLoader = dataloader(
             self.train_set,
@@ -287,22 +302,20 @@ class UNetTrainer:
 
         # latent noise: [B,K,1,H,W]
         K = int(getattr(self, "noise_channels", 4))
-        x = torch.randn(y.shape[0], K, 1, y.shape[-2], y.shape[-1],
-                        device=y.device, dtype=y.dtype)
         noise_scale = float(getattr(self, "noise_scale", 0.25)) / (K ** 0.5)
-
         x = noise_scale * torch.randn(y.shape[0], K, 1, y.shape[-2], y.shape[-1],
                                       device=y.device, dtype=y.dtype)
         # dummy timesteps (required by model signature)
         t = torch.zeros(y.shape[0], device=y.device, dtype=torch.long)
 
-        if self.accelerator.is_main_process:
-            print("x:", tuple(x.shape), "c:", tuple(c.shape))
+        #if self.accelerator.is_main_process:
+        #    print("x:", tuple(x.shape), "c:", tuple(c.shape))
 
         with self.accelerator.accumulate(self.model):
             y_hat = self.model(x, t, cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
 
-            loss = calc_mse_loss(y_hat, y, self.train_set.lats)
+            #loss = calc_mse_loss(y_hat, y, self.train_set.lats)
+            loss = lat_weighted_mse(y_hat, y, self.train_set.lats)
 
 
             self.accelerator.backward(loss)
@@ -354,7 +367,8 @@ class UNetTrainer:
                 raise NotImplementedError("Only epsilon and v_prediction supported")
 
             # Calculate loss and update gradients
-            mse_loss = calc_mse_loss(model_output, target,self.train_set.lats)
+            se_loss = calc_mse_loss(model_output, target,self.train_set.lats)
+            #mse_loss = lat_weighted_mse(model_output, target,self.train_set.lats)
             # Calculate the avg conditional loss
             if  hasattr(self.scheduler, "alphas_cumprod"):
                 pred_original_sample = self.get_original_sample(noisy_samples, model_output, timesteps)
