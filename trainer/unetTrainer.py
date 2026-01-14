@@ -320,7 +320,7 @@ class UNetTrainer:
                 print("lats type:", type(l))
                 if hasattr(l, "dims"): print("lats dims:", l.dims)
                 if hasattr(l, "shape"): print("lats shape:", l.shape)
-                if hasattr(l, "values"): print("lats values shape:", np.asarray(l.values).shape
+                if hasattr(l, "values"): print("lats values shape:", np.asarray(l.values).shape)
             loss = lat_weighted_mse(y_hat, y, self.train_set.lats)
 
 
