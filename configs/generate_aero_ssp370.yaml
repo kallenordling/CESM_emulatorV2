@@ -13,7 +13,7 @@ save_dir: ./
 # Seed for random number generators
 seed: 42
 variables: ["TREFHT"]
-load_path: /fmi/projappl/project_2001927/nordlin1/papers/CESM_emulatorV2/runs/run_test_aero3_21.pt
+load_path: /fmi/projappl/project_2001927/nordlin1/papers/CESM_emulatorV2/runs/run_test_aero3_165.pt
 gen_mode: gen  # Either gen/val/test
 batch_size: 4
 sample_steps: 250
@@ -25,7 +25,7 @@ cond_file: emissions.nc #emissions.nc
 sul_mul: 0
 co2_mul: 1
 training_mode: "fcn3"   # or "diffusion"
-noise_channels: 2     # only used for fcn3
+noise_channels: 1     # only used for fcn3
 dataset:
   _target_: data.climate_dataset.ClimateDataset
   seq_len: 1
