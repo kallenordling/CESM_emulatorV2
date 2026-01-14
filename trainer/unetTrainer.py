@@ -65,8 +65,8 @@ def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
 def lat_weighted_mse(model_output, target, lats, lat_min=-80.0, lat_max=80.0, eps=1e-6):
     # force fp32 for stability
     diff2 = (model_output.float() - target.float()).pow(2)  # [..., Y, X]
-    print(lats)
-    lat = torch.as_tensor(lats, device=diff2.device, dtype=torch.float32)  # [Y]
+    #print(lats)
+    lat = torch.as_tensor(lats.to_numpy().astype("float32"), device=diff2.device, dtype=torch.float32)  # [Y]
     mask = (lat >= lat_min) & (lat <= lat_max)
 
     w = torch.cos(torch.deg2rad(lat))
