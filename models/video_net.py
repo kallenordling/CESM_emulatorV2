@@ -569,7 +569,7 @@ class UNetModel3D(nn.Module):
         use_sparse_linear_attn=True,
         use_mid_attn=False,
         init_kernel_size=7,
-        resnet_groups=8,
+        resnet_groups=8,cond_channels=2,
         use_checkpoint=False,
         use_temp_attn=True,
         day_cond=False,
