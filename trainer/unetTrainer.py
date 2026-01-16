@@ -63,7 +63,7 @@ def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
     return sorted(paths, key=_key, reverse=True)
 
 
-def lat_weighted_mse_loss(model_output, target, lats, lat_min=-80.0, lat_max=80.0):
+def lat_weighted_mse_loss(model_output, target, lats, lat_min=-80.0, lat_max=80.0, eps=1e-6)):
     # force fp32 for stability
     diff2 = (model_output.float() - target.float()).pow(2)  # [..., Y, X]
 
