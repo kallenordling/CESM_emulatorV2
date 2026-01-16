@@ -64,28 +64,21 @@ def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
 
 
 def lat_weighted_mse_loss(model_output, target, lats, lat_min=-80.0, lat_max=80.0):
-    """Consistent latitude-weighted MSE with proper normalization"""
-    # Convert to float32 for stability
-    diff2 = (model_output.float() - target.float()).pow(2)
+    # force fp32 for stability
+    diff2 = (model_output.float() - target.float()).pow(2)  # [..., Y, X]
 
-    # Create latitude weights
-    lat = torch.as_tensor(lats.to_numpy().astype("float32"),
-                          device=diff2.device,
-                          dtype=torch.float32)
+    lat = torch.as_tensor(lats.to_numpy().astype("float32"), device=diff2.device, dtype=torch.float32)  # [Y]
     mask = (lat >= lat_min) & (lat <= lat_max)
-    w = torch.cos(torch.deg2rad(lat)) * mask.to(w.dtype)
 
-    # Reshape for broadcasting
-    w = w.view(1, 1, 1, -1, 1)  # [1, 1, 1, Y, 1]
+    w = torch.cos(torch.deg2rad(lat))
+    w = w * mask.to(w.dtype)  # [Y]
 
-    # Apply weighting
-    weighted_diff = diff2 * w
+    # reshape to broadcast over lon and leading dims
+    w = w.view(*([1] * (diff2.ndim - 2)), -1, 1)  # [..., Y, 1]
 
-    # Proper normalization
-    valid_pixels = w.sum() * diff2.shape[-1]  # Sum over lat weights × lon count
-    loss = weighted_diff.sum() / valid_pixels.clamp(min=1e-8)
-
-    return loss
+    weighted = diff2 * w
+    denom = (w.sum() * diff2.shape[-1]).clamp(min=eps)  # sum over lat weights * lon count
+    return weighted.sum() / denom
 
 def calc_mse_loss(model_output, target, lats):
     """Latitude-weighted MSE loss using only latitudes between -80 and 80 degrees"""
