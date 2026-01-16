@@ -62,22 +62,30 @@ def _list_ckpts_sorted(ckpt_dir, pattern="ckpt_epoch_*.pt"):
         return (int(m.group(1)) if m else -1, os.path.getmtime(p))
     return sorted(paths, key=_key, reverse=True)
 
-def lat_weighted_mse(model_output, target, lats, lat_min=-80.0, lat_max=80.0, eps=1e-6):
-    # force fp32 for stability
-    diff2 = (model_output.float() - target.float()).pow(2)  # [..., Y, X]
-    #print(lats)
-    lat = torch.as_tensor(lats.to_numpy().astype("float32"), device=diff2.device, dtype=torch.float32)  # [Y]
+
+def lat_weighted_mse_loss(model_output, target, lats, lat_min=-80.0, lat_max=80.0):
+    """Consistent latitude-weighted MSE with proper normalization"""
+    # Convert to float32 for stability
+    diff2 = (model_output.float() - target.float()).pow(2)
+
+    # Create latitude weights
+    lat = torch.as_tensor(lats.to_numpy().astype("float32"),
+                          device=diff2.device,
+                          dtype=torch.float32)
     mask = (lat >= lat_min) & (lat <= lat_max)
+    w = torch.cos(torch.deg2rad(lat)) * mask.to(w.dtype)
 
-    w = torch.cos(torch.deg2rad(lat))
-    w = w * mask.to(w.dtype)  # [Y]
+    # Reshape for broadcasting
+    w = w.view(1, 1, 1, -1, 1)  # [1, 1, 1, Y, 1]
 
-    # reshape to broadcast over lon and leading dims
-    w = w.view(*([1] * (diff2.ndim - 2)), -1, 1)  # [..., Y, 1]
+    # Apply weighting
+    weighted_diff = diff2 * w
 
-    weighted = diff2 * w
-    denom = (w.sum() * diff2.shape[-1]).clamp(min=eps)  # sum over lat weights * lon count
-    return weighted.sum() / denom
+    # Proper normalization
+    valid_pixels = w.sum() * diff2.shape[-1]  # Sum over lat weights × lon count
+    loss = weighted_diff.sum() / valid_pixels.clamp(min=1e-8)
+
+    return loss
 
 def calc_mse_loss(model_output, target, lats):
     """Latitude-weighted MSE loss using only latitudes between -80 and 80 degrees"""
@@ -287,12 +295,15 @@ class UNetTrainer:
     def get_loss_fcn3(self, batch, cond_map):
         # target: [B,1,1,H,W]
         y = batch.to(self.weight_dtype)
-        if y.ndim == 4:
-            y = y.unsqueeze(2)  # [B,1,H,W] -> [B,1,1,H,W]
-
+        if y.ndim == 5:
+            y = y.squeeze(2)  # [B, C, T, H, W] -> [B, C, H, W] if T=1
+            y_hat = y_hat.squeeze(2)
         # cond: [B,2,H,W] -> [B,2,1,H,W]
         c = cond_map.to(self.weight_dtype)
-
+        if self.accelerator.is_main_process and self.global_step % 100 == 0:
+            print(f"Batch range: {y.min():.3f}, {y.max():.3f}")
+            print(f"Cond range: CO2={c[:, 0].min():.3f},{c[:, 0].max():.3f}, "
+                  f"sul={c[:, 1].min():.3f},{c[:, 1].max():.3f}")
         # quick-start normalization for emissions (replace later w/ fixed stats)
         #c = torch.log1p(torch.clamp(c, min=0.0))
         #mean = c.mean(dim=(0, 2, 3), keepdim=True)
@@ -329,7 +340,9 @@ class UNetTrainer:
                 self.accelerator.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.optimizer.zero_grad()
-
+        if self.accelerator.is_main_process and self.global_step % 100 == 0:
+            print(f"Pred range: {y_hat.min():.3f}, {y_hat.max():.3f}")
+            print(f"Loss: {loss.item():.6f}")
         return loss
 
     def get_loss_diffusion(self, batch,cond_map):
