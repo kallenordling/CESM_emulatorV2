@@ -592,8 +592,8 @@ class UNetModel3D(nn.Module):
         model_dim = int(model_dim * 1.5)
         # Initial convolution and attention to process input
         init_padding = init_kernel_size // 2
-        self.cond_scale = nn.Parameter(torch.ones(1, cond_map_channels, 1, 1, 1))
-        self.cond_bias = nn.Parameter(torch.zeros(1, cond_map_channels, 1, 1, 1))
+        #self.cond_scale = nn.Parameter(torch.ones(1, cond_map_channels, 1, 1, 1))
+        #self.cond_bias = nn.Parameter(torch.zeros(1, cond_map_channels, 1, 1, 1))
         self.input_conv = nn.Conv3d(
             in_channels,
             model_dim,
@@ -812,7 +812,7 @@ class UNetModel3D(nn.Module):
             #print(cond_map.shape)
             #print(x.shape)
             #print('SHAPES')
-            cond_map = cond_map * self.cond_scale + self.cond_bias
+            #cond_map = cond_map * self.cond_scale + self.cond_bias
 
             x = torch.cat([x, cond_map], dim=1)
 
