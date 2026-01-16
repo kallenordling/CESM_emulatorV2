@@ -302,7 +302,7 @@ class UNetTrainer:
 
         # latent noise: [B,K,1,H,W]
         K = int(getattr(self, "noise_channels", 4))
-        noise_scale = float(getattr(self, "noise_scale", 0.25)) / (K ** 0.5)
+        noise_scale = float(getattr(self, "noise_scale", 0.0)) / (K ** 0.5)
         x = noise_scale * torch.randn(y.shape[0], K, 1, y.shape[-2], y.shape[-1],
                                       device=y.device, dtype=y.dtype)
         # dummy timesteps (required by model signature)
