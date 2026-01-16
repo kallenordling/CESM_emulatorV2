@@ -27,7 +27,7 @@ model:
     _target_: models.video_net.UNetModel3D
     in_channels: 3
     out_channels: 1
-    cond_channels: 2
+    cond_map_channels: 2
     dim_mults: [0.75, 2, 3,4]
 #   time_dim: 264
     resnet_groups: 8
