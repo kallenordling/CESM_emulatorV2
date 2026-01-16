@@ -295,9 +295,7 @@ class UNetTrainer:
     def get_loss_fcn3(self, batch, cond_map):
         # target: [B,1,1,H,W]
         y = batch.to(self.weight_dtype)
-        if y.ndim == 5:
-            y = y.squeeze(2)  # [B, C, T, H, W] -> [B, C, H, W] if T=1
-            y_hat = y_hat.squeeze(2)
+
         # cond: [B,2,H,W] -> [B,2,1,H,W]
         c = cond_map.to(self.weight_dtype)
         if self.accelerator.is_main_process and self.global_step % 100 == 0:
@@ -335,7 +333,10 @@ class UNetTrainer:
 
         with self.accelerator.accumulate(self.model):
             y_hat = self.model(x, t, cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
-
+            if y_hat.ndim == 5 and y_hat.shape[2] == 1:
+                y_hat = y_hat.squeeze(2)
+            if y.ndim == 5 and y.shape[2] == 1:
+                y = y.squeeze(2)
             #loss = calc_mse_loss(y_hat, y, self.train_set.lats)
             if self.accelerator.is_main_process and self.global_step == 0:
                 l = self.train_set.lats
