@@ -76,14 +76,19 @@ def normalize(ds: xr.DataArray) -> xr.DataArray:
     # Erikoiskäsittely päästömuuttujille:
     # min/max otetaan AINA emissions.nc-tiedoston koko kentästä
     if ds.name in ["CO2_em_anthro", "sul"]:
+        # Get global stats
         minmax = _get_emissions_minmax()
         min_val, max_val = minmax[ds.name]
-        denom = max_val - min_val
 
-        if denom == 0.0:
+        # Center and scale similar to temperature
+        mean_val = (min_val + max_val) / 2
+        range_val = max_val - min_val
+
+        if range_val == 0:
             norm = xr.zeros_like(ds)
         else:
-            norm = (ds - min_val) / denom
+            # Scale to roughly [-1, 1] range
+            norm = (ds - mean_val) / (range_val / 2)
 
         return norm.fillna(0)
 

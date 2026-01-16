@@ -323,9 +323,15 @@ class UNetTrainer:
 
         #if self.accelerator.is_main_process:
         #    print("x:", tuple(x.shape), "c:", tuple(c.shape))
-
+        c_enhanced = torch.cat([
+            c,  # Original: [B, 2, 1, H, W]
+            c.pow(2),  # Squared terms
+            (c[:, 1:2] > 0.8).float(),  # High sulfate indicator
+            (c[:, 0:1] * c[:, 1:2]),  # CO2 × sulfate interaction
+            c.mean(dim=(3, 4), keepdim=True).expand_as(c),  # Spatial mean
+        ], dim=1)  # Now [B, 7, 1, H, W]
         with self.accelerator.accumulate(self.model):
-            y_hat = self.model(x, t, cond_map=c)  # model will concat x + c internally :contentReference[oaicite:10]{index=10}
+            y_hat = self.model(x, t, cond_map=c_enhanced)
             if y_hat.ndim == 5 and y_hat.shape[2] == 1:
                 y_hat = y_hat.squeeze(2)
             if y.ndim == 5 and y.shape[2] == 1:
