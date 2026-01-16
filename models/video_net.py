@@ -589,7 +589,7 @@ class UNetModel3D(nn.Module):
         # Add an input channel for the conditioning map
         #if cond_map:
         #    in_channels += n_vars
-
+        model_dim = int(model_dim * 1.5)
         # Initial convolution and attention to process input
         init_padding = init_kernel_size // 2
         self.input_conv = nn.Conv3d(
