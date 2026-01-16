@@ -301,9 +301,20 @@ class UNetTrainer:
         # cond: [B,2,H,W] -> [B,2,1,H,W]
         c = cond_map.to(self.weight_dtype)
         if self.accelerator.is_main_process and self.global_step % 100 == 0:
-            print(f"Batch range: {y.min():.3f}, {y.max():.3f}")
-            print(f"Cond range: CO2={c[:, 0].min():.3f},{c[:, 0].max():.3f}, "
-                  f"sul={c[:, 1].min():.3f},{c[:, 1].max():.3f}")
+            print(f"Batch shape: {y.shape}, Cond shape: {c.shape}")
+
+            # Check for high emissions
+            high_co2_mask = c[:, 0] > 0.8  # Threshold for "high" normalized CO2
+            high_sul_mask = c[:, 1] > 0.8  # Threshold for "high" normalized sulfate
+
+            if high_co2_mask.any() or high_sul_mask.any():
+                print(f"High emissions detected at step {self.global_step}:")
+                print(f"  Max CO2: {c[:, 0].max():.3f}")
+                print(f"  Max sul: {c[:, 1].max():.3f}")
+                print(f"  Corresponding temp stats:")
+                print(f"    Mean: {y.mean():.3f}")
+                print(f"    Std: {y.std():.3f}")
+                print(f"    Min/Max: {y.min():.3f}/{y.max():.3f}")
         # quick-start normalization for emissions (replace later w/ fixed stats)
         #c = torch.log1p(torch.clamp(c, min=0.0))
         #mean = c.mean(dim=(0, 2, 3), keepdim=True)

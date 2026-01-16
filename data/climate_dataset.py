@@ -219,12 +219,7 @@ class ClimateDataset(Dataset):
             self.tensor_data_cond[:, idx:idx + self.seq_len]
 
         # Debug: Flag high emissions
-        if self.accelerator.is_main_process and random.random() < 0.01:
-            high_emission = cond[0].max() > 0.8  # Threshold for "high"
-            if high_emission:
-                print(f"High emission sample at idx {idx}: "
-                      f"CO2={cond[0].max():.3f}, "
-                      f"Temp={data.mean():.3f}")
+        return data,cond
 
 
 class ClimateDataLoader:
